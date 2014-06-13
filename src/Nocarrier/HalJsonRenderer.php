@@ -27,14 +27,19 @@ class HalJsonRenderer implements HalRenderer
      * @param bool $pretty
      * @return string
      */
-    public function render(Hal $resource, $pretty)
+    public function render(Hal $resource, $pretty, $encode = true)
     {
         $options = 0;
         if (version_compare(PHP_VERSION, '5.4.0') >= 0 and $pretty) {
             $options = JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT;
         }
 
-        return json_encode($this->arrayForJson($resource), $options);
+        $arrayForJson = $this->arrayForJson($resource);
+        if ($encode) {
+            return json_encode($arrayForJson, $options);
+        }
+
+        return $arrayForJson;
     }
 
     /**
@@ -51,7 +56,7 @@ class HalJsonRenderer implements HalRenderer
         if (!is_null($uri)) {
             $data['self'] = array('href' => $uri);
         }
-        foreach($links as $rel => $links) {
+        foreach ($links as $rel => $links) {
             if (count($links) === 1 && $rel !== 'curies') {
                 $data[$rel] = array('href' => $links[0]->getUri());
                 foreach ($links[0]->getAttributes() as $attribute => $value) {
@@ -81,12 +86,16 @@ class HalJsonRenderer implements HalRenderer
      */
     protected function resourcesForJson($resources)
     {
+        if (!is_array($resources)) {
+            return $this->arrayForJson($resources);
+        }
+
         $data = array();
 
         foreach ($resources as $resource) {
             $res = $this->arrayForJson($resource);
 
-            if(!empty($res)){
+            if (!empty($res)) {
                 $data[] = $res;
             }
         }
@@ -130,7 +139,7 @@ class HalJsonRenderer implements HalRenderer
      */
     protected function arrayForJson(Hal $resource = null)
     {
-        if ($resource == null){
+        if ($resource == null) {
             return array();
         }
 
@@ -142,7 +151,7 @@ class HalJsonRenderer implements HalRenderer
             $data['_links'] = $links;
         }
 
-        foreach($resource->getResources() as $rel => $resources) {
+        foreach ($resource->getRawResources() as $rel => $resources) {
             $data['_embedded'][$rel] = $this->resourcesForJson($resources);
         }
 

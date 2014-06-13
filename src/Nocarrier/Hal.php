@@ -75,11 +75,18 @@ class Hal
      * representation. This will not affect the JSON representation.
      *
      * @param mixed $uri
-     * @param array $data
+     * @param array|Traversable $data
+     *
+     * @throws \RuntimeException
      */
-    public function __construct($uri = null, array $data = array())
+    public function __construct($uri = null, $data = array())
     {
         $this->uri = $uri;
+
+        if (!is_array($data) && !$data instanceof \Traversable) {
+            throw new \RuntimeException(
+                'The $data parameter must be an array or an object implementing the Traversable interface.');
+        }
         $this->data = $data;
 
         $this->links = new HalLinkContainer();
@@ -88,86 +95,30 @@ class Hal
     /**
      * Decode a application/hal+json document into a Nocarrier\Hal object.
      *
-     * @param string $text
+     * @param string $data
      * @param int $max_depth
      * @static
      * @access public
      * @return \Nocarrier\Hal
      */
-    public static function fromJson($text, $max_depth = 0)
+    public static function fromJson($data, $depth = 0)
     {
-        $data = json_decode($text, true);
-        $uri = $data['_links']['self']['href'];
-        unset ($data['_links']['self']);
-
-        $links = $data['_links'];
-        unset ($data['_links']);
-
-        $embedded = isset($data['_embedded']) ? $data['_embedded'] : array();
-        unset ($data['_embedded']);
-
-        $hal = new Hal($uri, $data);
-        foreach ($links as $rel => $links) {
-            if (!isset($links[0]) or !is_array($links[0])) {
-                $links = array($links);
-            }
-
-            foreach ($links as $link) {
-                $href = $link['href'];
-                unset($link['href'], $link['title']);
-                $hal->addLink($rel, $href, $link);
-            }
-        }
-
-        if ($max_depth > 0) {
-            foreach ($embedded as $rel => $embed) {
-                if (!is_array($embed)) {
-                    $hal->addResource($rel, self::fromJson(json_encode($embed), $max_depth - 1));
-                } else {
-                    foreach ($embed as $child_resource) {
-                        $hal->addResource($rel, self::fromJson(json_encode($child_resource), $max_depth - 1));
-                    }
-                }
-            }
-        }
-
-        return $hal;
+        return JsonHalFactory::fromJson(new static(), $data, $depth);
     }
 
     /**
      * Decode a application/hal+xml document into a Nocarrier\Hal object.
      *
      * @param string $text
+     * @param int $max_depth
+     *
      * @static
      * @access public
      * @return \Nocarrier\Hal
      */
-    public static function fromXml($text)
+    public static function fromXml($data, $depth = 0)
     {
-        $data = new \SimpleXMLElement($text);
-        $children = $data->children();
-        $links = clone $children->link;
-        unset ($children->link);
-
-        $embedded = clone $children->resource;
-        unset ($children->resource);
-
-        $hal = new Hal($data->attributes()->href, (array) $children);
-        foreach ($links as $links) {
-            if (!is_array($links)) {
-                $links = array($links);
-            }
-            foreach ($links as $link) {
-                $attributes = (array) $link->attributes();
-                $attributes = $attributes['@attributes'];
-                $rel = $attributes['rel'];
-                $href = $attributes['href'];
-                unset($attributes['rel'], $attributes['href']);
-                $hal->addLink($rel, $href, $attributes);
-            }
-        }
-
-        return $hal;
+        return XmlHalFactory::fromXml(new static(), $data, $depth);
     }
 
     /**
@@ -198,6 +149,43 @@ class Hal
     {
         $this->resources[$rel][] = $resource;
 
+        return $this;
+    }
+
+    /**
+     * Set an embedded resource, identified by $rel and represented by $resource
+     *
+     * Using this method signifies that $rel will only ever be a single object
+     * (only really relevant to JSON rendering)
+     *
+     * @param string $rel
+     * @param array|Hal $resource
+     */
+    public function setResource($rel, $resource)
+    {
+        if (is_array($resource)) {
+            foreach ($resource as $r) {
+                $this->addResource($rel, $r);
+            }
+
+            return $this;
+        }
+
+        if (!($resource instanceof Hal)) {
+            throw new \InvalidArgumentException('$resource should be of type array or Nocarrier\Hal');
+        }
+
+        $this->resources[$rel] = $resource;
+
+        return $this;
+    }
+
+    /**
+     * Set resource's data
+     */
+    public function setData(Array $data = null)
+    {
+        $this->data = $data;
         return $this;
     }
 
@@ -242,7 +230,49 @@ class Hal
      */
     public function getResources()
     {
+        $resources = array_map(function ($resource) {
+            return is_array($resource) ? $resource : array($resource);
+        }, $this->getRawResources());
+
+        return $resources;
+    }
+
+    /**
+     * Return an array of Nocarrier\Hal objected embedded in this one. Each key
+     * may contain an array of resources, or a single resource. For a
+     * consistent approach, use getResources
+     *
+     * @return array
+     */
+    public function getRawResources()
+    {
         return $this->resources;
+    }
+
+    /**
+     * Get the first resource for a given rel. Useful if you're only expecting
+     * one resource, or you don't care about subsequent resources
+     *
+     * @return Hal
+     */
+    public function getFirstResource($rel)
+    {
+        $resources = $this->getResources();
+
+        if (isset($resources[$rel])) {
+            return $resources[$rel][0];
+        }
+
+        return null;
+    }
+
+    /**
+     * Set resource's URI
+     */
+    public function setUri($uri)
+    {
+        $this->uri = $uri;
+        return $this;
     }
 
     /**
@@ -261,13 +291,15 @@ class Hal
      *
      * @param bool $pretty
      *   Enable pretty-printing.
+     * @param bool $encode
+     *   Run through json_encode
      * @return string
      */
-    public function asJson($pretty = false)
+    public function asJson($pretty = false, $encode = true)
     {
         $renderer = new HalJsonRenderer();
 
-        return $renderer->render($this, $pretty);
+        return $renderer->render($this, $pretty, $encode);
     }
 
     /**
